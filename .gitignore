@@ -3,6 +3,7 @@
 .clangd
 
 /build*
+.build_tmp/
 _skbuild
 *.egg-info
 __pycache__
@@ -16,3 +17,28 @@ generated/
 result/
 test_sh/
 test_random/
+
+# Data files
+*.ply
+
+# Configuration files
+*.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor and IDE
+*.swp
+*.swo
+*~
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary files
+*.tmp
+*.bak
+*.log
