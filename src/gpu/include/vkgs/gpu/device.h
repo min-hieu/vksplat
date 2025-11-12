@@ -33,6 +33,7 @@ class VKGS_GPU_API Device {
   auto allocator() const noexcept { return allocator_; }
   auto physical_device() const noexcept { return physical_device_; }
   auto device() const noexcept { return device_; }
+  auto instance() const noexcept { return instance_; }
 
   auto graphics_queue() const noexcept { return graphics_queue_; }
   auto compute_queue() const noexcept { return compute_queue_; }

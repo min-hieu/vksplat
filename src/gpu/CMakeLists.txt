@@ -53,10 +53,14 @@ target_include_directories(vkgs_gpu
     src/
 )
 
+find_package(SDL3 REQUIRED)
+
 target_link_libraries(vkgs_gpu
   PUBLIC
     volk::volk_headers
     GPUOpen::VulkanMemoryAllocator
+  PRIVATE
+    SDL3::SDL3
 )
 
 target_compile_definitions(vkgs_gpu PUBLIC VKGS_GPU_STATIC)

@@ -43,6 +43,9 @@ class VKGS_CORE_API Renderer {
   uint32_t compute_queue_index() const noexcept;
   uint32_t transfer_queue_index() const noexcept;
 
+  // For viewer integration
+  std::shared_ptr<gpu::Device> device() const noexcept { return device_; }
+
   std::shared_ptr<GaussianSplats> CreateGaussianSplats(size_t size, const float* means, const float* quats,
                                                        const float* scales, const float* opacities,
                                                        const uint16_t* colors, int sh_degree);

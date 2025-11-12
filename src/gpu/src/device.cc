@@ -3,6 +3,9 @@
 #include <iostream>
 #include <vector>
 
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+
 #include "vkgs/gpu/queue.h"
 #include "vkgs/gpu/semaphore.h"
 #include "vkgs/gpu/fence.h"
@@ -78,12 +81,19 @@ Device::Device() {
       "VK_LAYER_KHRONOS_validation",
   };
 
-  std::vector<const char*> extensions = {
-      VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+  std::vector<const char*> extensions;
+
+  // Add SDL3 Vulkan extensions
+  unsigned int sdl_extension_count = 0;
+  const char* const* sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&sdl_extension_count);
+  if (sdl_extensions && sdl_extension_count > 0) {
+    extensions.insert(extensions.end(), sdl_extensions, sdl_extensions + sdl_extension_count);
+  }
+
+  extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 #ifdef __APPLE__
-      VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+  extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 #endif
-  };
 
   VkInstanceCreateInfo instance_info = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
 #ifdef __APPLE__
@@ -131,8 +141,11 @@ Device::Device() {
     if (type & VK_QUEUE_GRAPHICS_BIT) graphics = true;
     if (type & VK_QUEUE_COMPUTE_BIT) compute = true;
     if (type & VK_QUEUE_TRANSFER_BIT) transfer = true;
-    if (type & (VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR | VK_QUEUE_OPTICAL_FLOW_BIT_NV |
-                VK_QUEUE_DATA_GRAPH_BIT_ARM))
+    VkQueueFlags special_purpose_flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR | VK_QUEUE_OPTICAL_FLOW_BIT_NV;
+#ifdef VK_QUEUE_DATA_GRAPH_BIT_ARM
+    special_purpose_flags |= VK_QUEUE_DATA_GRAPH_BIT_ARM;
+#endif
+    if (type & special_purpose_flags)
       special_purpose = true;
 
     // TODO: make exact rule for selecting queue.
@@ -162,6 +175,7 @@ Device::Device() {
   queue_create_infos[2].pQueuePriorities = &queue_priority;
 
   std::vector<const char*> device_extensions = {
+      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 #ifdef __APPLE__
       "VK_KHR_portability_subset",
 #endif

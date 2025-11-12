@@ -76,6 +76,16 @@ for i in range(len(images)):
   Image.fromarray(images[i, :, :, 3]).save(f"alpha_{i}.png")
 ```
 
+### macOS: double-click `.ply` files
+
+Register a lightweight app wrapper that launches `inspector` when `.ply` files are opened from Finder:
+
+```bash
+./tools/install_mac_viewer_app.sh
+```
+
+This creates `~/Applications/SplatStreamViewer.app`. Set it as the default once: Finder → right-click a `.ply` → **Get Info** → **Open With** → **SplatStream Viewer** → **Change All…**.
+
 ## Samples
 
 ![train](/media/train.gif) ![random](/media/random.gif)
