@@ -24,6 +24,11 @@ struct ComputePushConstants {
 
 struct GraphicsPushConstants {
   alignas(16) glm::vec4 background;
+  alignas(4) uint32_t visualize_depth;
+  alignas(4) float depth_z_min;
+  alignas(4) float depth_z_max;
+  alignas(4) float camera_near;
+  alignas(4) float camera_far;
 };
 
 struct Camera {

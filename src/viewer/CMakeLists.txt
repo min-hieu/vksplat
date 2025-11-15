@@ -56,6 +56,7 @@ if(SDL3_FOUND)
     src/gui/svg.cc
     src/gui/title_screen.cc
     src/gui/stats_panel.cc
+    src/gui/visual_panel.cc
     ${IMGUI_SOURCES}
   )
 

@@ -23,6 +23,7 @@ namespace viewer {
 namespace gui {
 class TitleScreen;
 class StatsPanel;
+class VisualPanel;
 }
 
 class GUI {
@@ -50,16 +51,26 @@ class GUI {
                         uint32_t width, uint32_t height,
                         bool showing_title_screen, bool& stats_panel_open,
                         const std::vector<float>& frame_times_ms, float current_frame_time_ms);
+  void RenderVisualPanel(VkCommandBuffer command_buffer, VkFramebuffer framebuffer,
+                         uint32_t width, uint32_t height,
+                         bool showing_title_screen, bool& visual_panel_open, bool& visualize_depth, bool& depth_auto_range, float& depth_z_min, float& depth_z_max);
+  void RenderAllPanels(VkCommandBuffer command_buffer, VkFramebuffer framebuffer,
+                       uint32_t width, uint32_t height,
+                       bool showing_title_screen, bool& stats_panel_open, bool& visual_panel_open,
+                       const std::vector<float>& frame_times_ms, float current_frame_time_ms,
+                       bool& visualize_depth, bool& depth_auto_range, float& depth_z_min, float& depth_z_max);
 
   // Click handling
   bool HandleTitleScreenClick(int x, int y, int width, int height,
                                std::string& pending_ply_path, std::function<std::string()> show_file_picker);
   bool HandleStatsPanelClick(int x, int y, int width, int height, bool& stats_panel_open);
+  bool HandleVisualPanelClick(int x, int y, int width, int height, bool& visual_panel_open);
 
  private:
   std::string assets_path_;
   std::unique_ptr<gui::TitleScreen> title_screen_;
   std::unique_ptr<gui::StatsPanel> stats_panel_;
+  std::unique_ptr<gui::VisualPanel> visual_panel_;
 
   // Vulkan state
   bool vulkan_initialized_ = false;

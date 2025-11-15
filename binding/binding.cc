@@ -29,7 +29,7 @@ PYBIND11_MODULE(_core, m) {
            })
       .def("draw", [](vkgs::Renderer& renderer, vkgs::GaussianSplats splats, py::array_t<float> view,
                       py::array_t<float> projection, uint32_t width, uint32_t height, py::array_t<float> background,
-                      float eps2d, int sh_degree, py::array_t<uint8_t> dst) {
+                      float eps2d, int sh_degree, py::array_t<uint8_t> dst, bool visualize_depth) {
         const auto* background_ptr = static_cast<const float*>(background.request().ptr);
         const auto* view_ptr = static_cast<const float*>(view.request().ptr);
         const auto* projection_ptr = static_cast<const float*>(projection.request().ptr);
@@ -48,8 +48,11 @@ PYBIND11_MODULE(_core, m) {
         std::memcpy(draw_options.background, background_ptr, 3 * sizeof(float));
         draw_options.eps2d = eps2d;
         draw_options.sh_degree = sh_degree;
+        draw_options.visualize_depth = visualize_depth;
         return renderer.Draw(splats, draw_options, dst_ptr);
-      });
+      }, py::arg("splats"), py::arg("view"), py::arg("projection"), py::arg("width"), py::arg("height"),
+         py::arg("background"), py::arg("eps2d"), py::arg("sh_degree"), py::arg("dst"),
+         py::arg("visualize_depth") = false);
 
   py::class_<vkgs::GaussianSplats>(m, "GaussianSplats")
       .def_property_readonly("size", &vkgs::GaussianSplats::size)

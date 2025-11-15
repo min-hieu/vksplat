@@ -1,6 +1,7 @@
 #include "vkgs/viewer/gui.h"
 #include "vkgs/viewer/gui/title_screen.h"
 #include "vkgs/viewer/gui/stats_panel.h"
+#include "vkgs/viewer/gui/visual_panel.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -42,9 +43,10 @@ GUI::GUI(const std::string& assets_path) : assets_path_(assets_path) {
   style.ScrollbarSize = 20.0f;
   style.GrabMinSize = 20.0f;
 
-  // Initialize title screen and stats panel (both will use the shared context)
+  // Initialize title screen, stats panel, and visual panel (all will use the shared context)
   title_screen_ = std::make_unique<gui::TitleScreen>(assets_path_);
   stats_panel_ = std::make_unique<gui::StatsPanel>();
+  visual_panel_ = std::make_unique<gui::VisualPanel>();
 
   vulkan_initialized_ = false;
 }
@@ -63,12 +65,15 @@ void GUI::Initialize(SDL_Window* window) {
   // Initialize ImGui SDL3 backend
   ImGui_ImplSDL3_InitForVulkan(window);
 
-  // Initialize both components
+  // Initialize all components
   if (title_screen_) {
     title_screen_->Initialize(window);
   }
   if (stats_panel_) {
     stats_panel_->Initialize(window);
+  }
+  if (visual_panel_) {
+    visual_panel_->Initialize(window);
   }
 }
 
@@ -339,6 +344,140 @@ bool GUI::HandleStatsPanelClick(int x, int y, int width, int height, bool& stats
     return stats_panel_->HandleClick(x, y, width, height, stats_panel_open);
   }
   return false;
+}
+
+void GUI::RenderVisualPanel(VkCommandBuffer command_buffer, VkFramebuffer framebuffer,
+                             uint32_t width, uint32_t height,
+                             bool showing_title_screen, bool& visual_panel_open, bool& visualize_depth, bool& depth_auto_range, float& depth_z_min, float& depth_z_max) {
+  if (!vulkan_initialized_ || showing_title_screen || !visual_panel_ || framebuffer == VK_NULL_HANDLE) return;
+
+  // Set display size BEFORE starting the frame
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+  io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+  // Start ImGui frame (this will use the DisplaySize we just set)
+  ImGui_ImplSDL3_NewFrame();
+  ImGui_ImplVulkan_NewFrame();  // This automatically handles font texture creation on first call
+  ImGui::NewFrame();
+
+  // Render visual panel UI
+  visual_panel_->RenderUI(visual_panel_open, visualize_depth, depth_auto_range, depth_z_min, depth_z_max);
+
+  // Render ImGui to Vulkan
+  ImGui::Render();
+  ImDrawData* draw_data = ImGui::GetDrawData();
+
+  if (draw_data) {
+    // Begin render pass with framebuffer (required for ImGui Vulkan backend)
+    VkRenderPassBeginInfo render_pass_info = {};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = render_pass_;
+    render_pass_info.framebuffer = framebuffer;
+    render_pass_info.renderArea.offset = {0, 0};
+    render_pass_info.renderArea.extent = {width, height};
+    render_pass_info.clearValueCount = 0;
+    render_pass_info.pClearValues = nullptr;
+
+    vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Set viewport and scissor to cover the full screen
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = {width, height};
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    // Record ImGui draw commands (ImGui handles scaling internally)
+    ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
+
+    vkCmdEndRenderPass(command_buffer);
+  }
+}
+
+bool GUI::HandleVisualPanelClick(int x, int y, int width, int height, bool& visual_panel_open) {
+  if (visual_panel_) {
+    return visual_panel_->HandleClick(x, y, width, height, visual_panel_open);
+  }
+  return false;
+}
+
+void GUI::RenderAllPanels(VkCommandBuffer command_buffer, VkFramebuffer framebuffer,
+                          uint32_t width, uint32_t height,
+                          bool showing_title_screen, bool& stats_panel_open, bool& visual_panel_open,
+                          const std::vector<float>& frame_times_ms, float current_frame_time_ms,
+                          bool& visualize_depth, bool& depth_auto_range, float& depth_z_min, float& depth_z_max) {
+  if (!vulkan_initialized_ || showing_title_screen || framebuffer == VK_NULL_HANDLE) return;
+
+  // Set display size BEFORE starting the frame
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+  io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+  // Start ImGui frame (this will use the DisplaySize we just set)
+  ImGui_ImplSDL3_NewFrame();
+  ImGui_ImplVulkan_NewFrame();  // This automatically handles font texture creation on first call
+  ImGui::NewFrame();
+
+  // Scale font to half size for all panels
+  io.FontGlobalScale = 0.5f;
+
+  // Render both panels in the same frame
+  if (stats_panel_) {
+    stats_panel_->RenderUI(stats_panel_open, frame_times_ms, current_frame_time_ms);
+  }
+  if (visual_panel_) {
+    visual_panel_->RenderUI(visual_panel_open, visualize_depth, depth_auto_range, depth_z_min, depth_z_max);
+  }
+
+  // Reset font scale
+  io.FontGlobalScale = 1.0f;
+
+  // Render ImGui to Vulkan
+  ImGui::Render();
+  ImDrawData* draw_data = ImGui::GetDrawData();
+
+  if (draw_data) {
+    // Begin render pass with framebuffer (required for ImGui Vulkan backend)
+    VkRenderPassBeginInfo render_pass_info = {};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = render_pass_;
+    render_pass_info.framebuffer = framebuffer;
+    render_pass_info.renderArea.offset = {0, 0};
+    render_pass_info.renderArea.extent = {width, height};
+    render_pass_info.clearValueCount = 0;
+    render_pass_info.pClearValues = nullptr;
+
+    vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Set viewport and scissor to cover the full screen
+    VkViewport viewport = {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.offset = {0, 0};
+    scissor.extent = {width, height};
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+    // Record ImGui draw commands (ImGui handles scaling internally)
+    ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffer);
+
+    vkCmdEndRenderPass(command_buffer);
+  }
 }
 
 ImTextureID GUI::LoadSVGTexture(const std::string& svg_path, int width, int height) {

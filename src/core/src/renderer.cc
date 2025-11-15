@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <sstream>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -113,11 +115,15 @@ Renderer::Renderer() {
   graphics_pipeline_layout_ =
       gpu::PipelineLayout::Create(*device_, {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT}},
                                   {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GraphicsPushConstants)}});
+  // Create two pipelines: one with depth writing disabled (for transparency) and one with depth writing enabled (for auto-range)
+  // Use LESS_OR_EQUAL for depth-write pipeline to allow more fragments to pass, helping with transparency
   splat_pipeline_ = gpu::GraphicsPipeline::Create(*device_, *graphics_pipeline_layout_, splat_vert, splat_frag,
-                                                  VK_FORMAT_R16G16B16A16_SFLOAT);
+                                                  VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, false, VK_COMPARE_OP_LESS);
+  splat_pipeline_depth_write_ = gpu::GraphicsPipeline::Create(*device_, *graphics_pipeline_layout_, splat_vert, splat_frag,
+                                                               VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true, VK_COMPARE_OP_LESS_OR_EQUAL);
   splat_background_pipeline_ =
       gpu::GraphicsPipeline::Create(*device_, *graphics_pipeline_layout_, splat_background_vert, splat_background_frag,
-                                    VK_FORMAT_R16G16B16A16_SFLOAT);
+                                    VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, false);
 }
 
 Renderer::~Renderer() = default;
@@ -779,6 +785,11 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
 
   GraphicsPushConstants graphics_push_constants;
   graphics_push_constants.background = glm::vec4(draw_options.background, 1.f);
+  graphics_push_constants.visualize_depth = draw_options.visualize_depth ? 1u : 0u;
+  graphics_push_constants.depth_z_min = draw_options.depth_z_min;
+  graphics_push_constants.depth_z_max = draw_options.depth_z_max;
+  graphics_push_constants.camera_near = draw_options.camera_near;
+  graphics_push_constants.camera_far = draw_options.camera_far;
 
   Camera camera_data;
   camera_data.projection = draw_options.projection;
@@ -813,6 +824,15 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
   auto camera_stage = compute_storage->camera_stage();
 
   std::memcpy(camera_stage->data(), &camera_data, sizeof(Camera));
+
+  auto image = graphics_storage->image();
+  auto image_u8 = graphics_storage->image_u8();
+  auto depth_image = graphics_storage->depth_image();
+
+  // Ensure depth_image is valid (should always be created by Update, but check to be safe)
+  if (!depth_image || width == 0 || height == 0) {
+    throw std::runtime_error("Depth image not initialized or invalid dimensions");
+  }
 
   // Compute queue
   {
@@ -970,9 +990,6 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
                                index, sort_storage, inverse_index, draw_indirect, instances});
   }
 
-  auto image = graphics_storage->image();
-  auto image_u8 = graphics_storage->image_u8();
-
   // Graphics queue
   {
     auto fence = device_->AllocateFence();
@@ -1013,9 +1030,20 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
     image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     image_memory_barrier.image = *image;
     image_memory_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    // Layout transition for depth attachment
+    VkImageMemoryBarrier2 depth_memory_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    depth_memory_barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    depth_memory_barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    depth_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_memory_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth_memory_barrier.image = *depth_image;
+    depth_memory_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+
+    std::array<VkImageMemoryBarrier2, 2> image_barriers = {image_memory_barrier, depth_memory_barrier};
     dependency_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency_info.imageMemoryBarrierCount = 1;
-    dependency_info.pImageMemoryBarriers = &image_memory_barrier;
+    dependency_info.imageMemoryBarrierCount = image_barriers.size();
+    dependency_info.pImageMemoryBarriers = image_barriers.data();
     vkCmdPipelineBarrier2(*cb, &dependency_info);
 
     // Rendering
@@ -1025,17 +1053,56 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color_attachment.clearValue.color = {0.f, 0.f, 0.f, 0.f};
+
+    VkRenderingAttachmentInfo depth_attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth_attachment.imageView = depth_image->image_view();
+    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth_attachment.clearValue.depthStencil.depth = 1.0f;
+
     VkRenderingInfo rendering_info = {VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering_info.renderArea.offset = {0, 0};
     rendering_info.renderArea.extent = {width, height};
     rendering_info.layerCount = 1;
     rendering_info.colorAttachmentCount = 1;
     rendering_info.pColorAttachments = &color_attachment;
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    // If auto-range is enabled, first render with depth writing to populate depth buffer
+    if (draw_options.depth_auto_range && draw_options.depth_z_min_out && draw_options.depth_z_max_out) {
+      vkCmdBeginRendering(*cb, &rendering_info);
+
+      vkCmdPushConstants(*cb, *graphics_pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(graphics_push_constants), &graphics_push_constants);
+
+      // Use depth-write pipeline to populate depth buffer
+      vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *splat_pipeline_depth_write_);
+      cmdPushDescriptorSet(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *graphics_pipeline_layout_, {*instances});
+
+      VkViewport viewport = {0.f, 0.f, static_cast<float>(width), static_cast<float>(height), 0.f, 1.f};
+      vkCmdSetViewport(*cb, 0, 1, &viewport);
+      VkRect2D scissor = {0, 0, width, height};
+      vkCmdSetScissor(*cb, 0, 1, &scissor);
+
+      vkCmdBindIndexBuffer(*cb, *index_buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexedIndirect(*cb, *draw_indirect, 0, 1, 0);
+
+      vkCmdEndRendering(*cb);
+
+      // Update depth attachment to load existing values for transparency pass
+      depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+      // Clear color for transparency pass
+      color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    }
+
+    // Now render with transparency pipeline (depth writing disabled) for final image
     vkCmdBeginRendering(*cb, &rendering_info);
 
     vkCmdPushConstants(*cb, *graphics_pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(graphics_push_constants), &graphics_push_constants);
 
+    // Always use transparency pipeline (depth writing disabled) for proper alpha blending
     vkCmdBindPipeline(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *splat_pipeline_);
     cmdPushDescriptorSet(*cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *graphics_pipeline_layout_, {*instances});
 
@@ -1052,6 +1119,23 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
 
     vkCmdEndRendering(*cb);
 
+    // Release depth image to transfer queue if auto-range is enabled
+    std::vector<VkImageMemoryBarrier2> release_barriers;
+    if (draw_options.depth_auto_range && draw_options.depth_z_min_out && draw_options.depth_z_max_out) {
+      VkImageMemoryBarrier2 depth_release_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      depth_release_barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      depth_release_barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      depth_release_barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+      depth_release_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+      depth_release_barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+      depth_release_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      depth_release_barrier.srcQueueFamilyIndex = gq->family_index();
+      depth_release_barrier.dstQueueFamilyIndex = tq->family_index();
+      depth_release_barrier.image = *depth_image;
+      depth_release_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      release_barriers.push_back(depth_release_barrier);
+    }
+
     // float -> uint8
     image_memory_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     image_memory_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1062,10 +1146,14 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
     image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     image_memory_barrier.image = *image;
     image_memory_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    dependency_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency_info.imageMemoryBarrierCount = 1;
-    dependency_info.pImageMemoryBarriers = &image_memory_barrier;
-    vkCmdPipelineBarrier2(*cb, &dependency_info);
+    release_barriers.push_back(image_memory_barrier);
+
+    if (!release_barriers.empty()) {
+      dependency_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dependency_info.imageMemoryBarrierCount = release_barriers.size();
+      dependency_info.pImageMemoryBarriers = release_barriers.data();
+      vkCmdPipelineBarrier2(*cb, &dependency_info);
+    }
 
     image_memory_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     image_memory_barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -1156,6 +1244,10 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
   }
 
   auto image_buffer = gpu::Buffer::Create(device_, VK_BUFFER_USAGE_TRANSFER_DST_BIT, width * height * 4, true);
+  std::shared_ptr<gpu::Buffer> depth_buffer;
+  if (draw_options.depth_auto_range && draw_options.depth_z_min_out && draw_options.depth_z_max_out) {
+    depth_buffer = gpu::Buffer::Create(device_, VK_BUFFER_USAGE_TRANSFER_DST_BIT, width * height * sizeof(float), true);
+  }
   {
     auto fence = device_->AllocateFence();
     auto cb = tq->AllocateCommandBuffer();
@@ -1189,6 +1281,37 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
     region.imageExtent = {width, height, 1};
     vkCmdCopyImageToBuffer(*cb, *image_u8, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *image_buffer, 1, &region);
 
+    // Copy depth buffer if auto-range is enabled
+    if (draw_options.depth_auto_range && draw_options.depth_z_min_out && draw_options.depth_z_max_out && depth_buffer) {
+      // Acquire depth image from graphics queue (already released in graphics queue)
+      // For queue family ownership transfers, oldLayout can be UNDEFINED as the layout is undefined from acquiring queue's perspective
+      VkImageMemoryBarrier2 depth_acquire_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      depth_acquire_barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+      depth_acquire_barrier.srcAccessMask = 0;
+      depth_acquire_barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+      depth_acquire_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+      depth_acquire_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;  // Layout is undefined from acquiring queue's perspective
+      depth_acquire_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      depth_acquire_barrier.srcQueueFamilyIndex = gq->family_index();
+      depth_acquire_barrier.dstQueueFamilyIndex = tq->family_index();
+      depth_acquire_barrier.image = *depth_image;
+      depth_acquire_barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      dependency_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dependency_info.imageMemoryBarrierCount = 1;
+      dependency_info.pImageMemoryBarriers = &depth_acquire_barrier;
+      vkCmdPipelineBarrier2(*cb, &dependency_info);
+
+      // Copy depth image to buffer
+      VkBufferImageCopy depth_region;
+      depth_region.bufferOffset = 0;
+      depth_region.bufferRowLength = 0;
+      depth_region.bufferImageHeight = 0;
+      depth_region.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      depth_region.imageOffset = {0, 0, 0};
+      depth_region.imageExtent = {width, height, 1};
+      vkCmdCopyImageToBuffer(*cb, *depth_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *depth_buffer, 1, &depth_region);
+    }
+
     vkEndCommandBuffer(*cb);
 
     // Submit
@@ -1216,8 +1339,67 @@ std::shared_ptr<RenderedImage> Renderer::Draw(std::shared_ptr<GaussianSplats> sp
     submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
 
     vkQueueSubmit2(*tq, 1, &submit_info, *fence);
-    auto task = task_monitor_->Add(fence, {cb, image, image_buffer, tsem}, [width, height, image_buffer, dst] {
+
+    // Capture only the values we need for the callback (not the entire draw_options struct)
+    bool depth_auto_range = draw_options.depth_auto_range;
+    float* depth_z_min_out = draw_options.depth_z_min_out;
+    float* depth_z_max_out = draw_options.depth_z_max_out;
+    float camera_near = draw_options.camera_near;
+    float camera_far = draw_options.camera_far;
+    float depth_z_min_default = draw_options.depth_z_min;
+    float depth_z_max_default = draw_options.depth_z_max;
+
+    auto task = task_monitor_->Add(fence, {cb, image, image_buffer, tsem, depth_buffer}, [width, height, image_buffer, dst, depth_buffer, depth_auto_range, depth_z_min_out, depth_z_max_out, camera_near, camera_far, depth_z_min_default, depth_z_max_default] {
       std::memcpy(dst, image_buffer->data<uint8_t>(), width * height * 4);
+
+      // Compute depth quantiles if auto-range is enabled
+      if (depth_auto_range && depth_z_min_out && depth_z_max_out && depth_buffer) {
+        const float* depth_data = depth_buffer->data<float>();
+        std::vector<float> valid_depths;
+        valid_depths.reserve(width * height);
+
+        // Collect all valid NDC depth values (excluding background pixels with depth = 1.0)
+        for (uint32_t i = 0; i < width * height; ++i) {
+          float ndc_depth = depth_data[i];
+          if (ndc_depth < 0.9999f) {  // Ignore background
+            valid_depths.push_back(ndc_depth);
+          }
+        }
+
+        // Compute quantiles (0.1 and 0.9)
+        if (valid_depths.size() > 0) {
+          // Sort depths
+          std::sort(valid_depths.begin(), valid_depths.end());
+
+          // Compute quantile indices
+          size_t q10_idx = static_cast<size_t>(valid_depths.size() * 0.1f);
+          size_t q90_idx = static_cast<size_t>(valid_depths.size() * 0.9f);
+          q10_idx = std::min(q10_idx, valid_depths.size() - 1);
+          q90_idx = std::min(q90_idx, valid_depths.size() - 1);
+
+          float ndc_q10 = valid_depths[q10_idx];
+          float ndc_q90 = valid_depths[q90_idx];
+
+          // Convert NDC depth to view-space depth (meters)
+          // For Vulkan: view_z = (near * far) / (far - ndc_z * (far - near))
+          float view_z_q10 = (camera_near * camera_far) / (camera_far - ndc_q10 * (camera_far - camera_near));
+          float view_z_q90 = (camera_near * camera_far) / (camera_far - ndc_q90 * (camera_far - camera_near));
+
+          // Ensure q10 < q90
+          if (view_z_q10 >= view_z_q90) {
+            float center = (view_z_q10 + view_z_q90) * 0.5f;
+            view_z_q10 = center * 0.9f;
+            view_z_q90 = center * 1.1f;
+          }
+
+          *depth_z_min_out = view_z_q10;
+          *depth_z_max_out = view_z_q90;
+        } else {
+          // No valid depth found, use defaults
+          *depth_z_min_out = depth_z_min_default;
+          *depth_z_max_out = depth_z_max_default;
+        }
+      }
     });
 
     rendered_image = std::make_shared<RenderedImage>(width, height, task);

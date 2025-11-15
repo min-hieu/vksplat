@@ -16,6 +16,7 @@
 #include "vkgs/viewer/gui.h"
 
 struct SDL_Window;
+struct SDL_Gamepad;
 
 namespace vkgs {
 namespace core {
@@ -45,6 +46,7 @@ class Viewer {
  private:
   void SetupCallbacks();
   void UpdateCamera();
+  void ProcessControllerInput();
   void RenderFrame();
   void RenderTitleScreen();
   void RecreateSwapchainResources();
@@ -93,6 +95,18 @@ class Viewer {
   double current_mouse_y_ = 0.0;
   float scroll_offset_ = 0.0f;
 
+  // Controller state
+  SDL_Gamepad* controller_ = nullptr;
+  float controller_left_stick_x_ = 0.0f;
+  float controller_left_stick_y_ = 0.0f;
+  float controller_right_stick_x_ = 0.0f;
+  float controller_right_stick_y_ = 0.0f;
+  float controller_trigger_left_ = 0.0f;
+  float controller_trigger_right_ = 0.0f;
+  float controller_rotation_speed_ = 2.0f;
+  float controller_pan_speed_ = 0.5f;
+  float controller_move_speed_ = 1.0f;
+
   // Frame tracking
   uint32_t frame_counter_ = 0;
   uint32_t current_image_index_ = 0;
@@ -103,6 +117,13 @@ class Viewer {
   std::vector<float> frame_times_ms_;  // Frame times in milliseconds
   std::chrono::high_resolution_clock::time_point last_frame_time_;
   float current_frame_time_ms_ = 0.0f;
+
+  // Visual options
+  bool visual_panel_open_ = false;
+  bool visualize_depth_ = false;
+  bool depth_auto_range_ = false;
+  float depth_z_min_ = 22.0f;
+  float depth_z_max_ = 50.0f;
 
   // Binary semaphores for swapchain (one per swapchain image)
   std::vector<VkSemaphore> image_acquired_semaphores_;

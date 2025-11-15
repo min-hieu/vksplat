@@ -14,6 +14,15 @@ struct DrawOptions {
   glm::vec3 background;
   float eps2d;
   int sh_degree;
+  bool visualize_depth = false;
+  bool depth_auto_range = false;
+  float depth_z_min = 22.0f;
+  float depth_z_max = 50.0f;
+  float camera_near = 0.1f;
+  float camera_far = 1000.0f;
+  // Output parameters for auto-range (filled in by Draw when depth_auto_range is true)
+  float* depth_z_min_out = nullptr;
+  float* depth_z_max_out = nullptr;
 };
 
 }  // namespace core

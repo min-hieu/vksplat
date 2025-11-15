@@ -21,6 +21,7 @@ class GraphicsStorage {
 
   auto image() const noexcept { return image_; }
   auto image_u8() const noexcept { return image_u8_; }
+  auto depth_image() const noexcept { return depth_image_; }
 
   void Update(uint32_t width, uint32_t height);
 
@@ -32,6 +33,7 @@ class GraphicsStorage {
   // Variable
   std::shared_ptr<gpu::Image> image_;     // (H, W, 4) float32
   std::shared_ptr<gpu::Image> image_u8_;  // (H, W, 4), UNORM
+  std::shared_ptr<gpu::Image> depth_image_;  // (H, W), depth buffer
 };
 
 }  // namespace core

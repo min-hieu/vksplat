@@ -38,6 +38,12 @@ RenderedImage Renderer::Draw(GaussianSplats splats, const DrawOptions& draw_opti
   core_draw_options.background = glm::make_vec3(draw_options.background);
   core_draw_options.eps2d = draw_options.eps2d;
   core_draw_options.sh_degree = draw_options.sh_degree;
+  core_draw_options.visualize_depth = draw_options.visualize_depth;
+  core_draw_options.depth_auto_range = draw_options.depth_auto_range;
+  core_draw_options.depth_z_min = draw_options.depth_z_min;
+  core_draw_options.depth_z_max = draw_options.depth_z_max;
+  core_draw_options.camera_near = draw_options.camera_near;
+  core_draw_options.camera_far = draw_options.camera_far;
   return RenderedImage(renderer_->Draw(splats.get(), core_draw_options, dst));
 }
 

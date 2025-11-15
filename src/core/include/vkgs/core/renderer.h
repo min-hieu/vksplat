@@ -69,6 +69,7 @@ class VKGS_CORE_API Renderer {
 
   std::shared_ptr<gpu::PipelineLayout> graphics_pipeline_layout_;
   std::shared_ptr<gpu::GraphicsPipeline> splat_pipeline_;
+  std::shared_ptr<gpu::GraphicsPipeline> splat_pipeline_depth_write_;  // Pipeline with depth writing enabled (for auto-range)
   std::shared_ptr<gpu::GraphicsPipeline> splat_background_pipeline_;
 
   struct DoubleBuffer {

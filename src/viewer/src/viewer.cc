@@ -135,8 +135,25 @@ std::optional<PlyBounds> ComputeBoundsFromPly(const std::string& path) {
 
 Viewer::Viewer(std::shared_ptr<core::Renderer> renderer, const std::string& title, uint32_t width, uint32_t height)
     : renderer_(renderer), width_(width), height_(height) {
-  if (!SDL_Init(SDL_INIT_VIDEO)) {
+  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
     throw std::runtime_error(std::string("Failed to initialize SDL3: ") + SDL_GetError());
+  }
+
+  // Open first available game controller
+  SDL_UpdateGamepads();
+  int num_gamepads = 0;
+  SDL_JoystickID* gamepad_ids = SDL_GetGamepads(&num_gamepads);
+  if (gamepad_ids && num_gamepads > 0) {
+    for (int i = 0; i < num_gamepads; ++i) {
+      if (SDL_IsGamepad(gamepad_ids[i])) {
+        controller_ = SDL_OpenGamepad(gamepad_ids[i]);
+        if (controller_) {
+          std::cout << "Game controller connected: " << SDL_GetGamepadName(controller_) << std::endl;
+          break;
+        }
+      }
+    }
+    SDL_free(gamepad_ids);
   }
 
   window_ = SDL_CreateWindow(title.c_str(), width, height, SDL_WINDOW_VULKAN);
@@ -217,6 +234,12 @@ Viewer::Viewer(std::shared_ptr<core::Renderer> renderer, const std::string& titl
 }
 
 Viewer::~Viewer() {
+  // Close game controller
+  if (controller_) {
+    SDL_CloseGamepad(controller_);
+    controller_ = nullptr;
+  }
+
   auto device = renderer_->device();
   VkDevice vk_device = device->device();
 
@@ -351,6 +374,68 @@ glm::mat4 Viewer::GetViewMatrix() const {
   eye = center + eye;
 
   return glm::lookAt(eye, center, up);
+}
+
+void Viewer::ProcessControllerInput() {
+  if (!controller_) return;
+
+  // Get delta time for frame-rate independent movement
+  auto current_time = std::chrono::high_resolution_clock::now();
+  float delta_time = std::chrono::duration<float>(current_time - last_frame_time_).count();
+  delta_time = std::min(delta_time, 0.1f);  // Cap at 100ms to avoid large jumps
+
+  // Apply deadzone to sticks (ignore small movements)
+  const float deadzone = 0.15f;
+
+  // Right joystick: Camera rotation (first-person style)
+  float right_x = std::abs(controller_right_stick_x_) > deadzone ? controller_right_stick_x_ : 0.0f;
+  float right_y = std::abs(controller_right_stick_y_) > deadzone ? controller_right_stick_y_ : 0.0f;
+
+  if (std::abs(right_x) > deadzone || std::abs(right_y) > deadzone) {
+    // Yaw (horizontal rotation around Y axis)
+    float yaw_delta = -right_x * controller_rotation_speed_ * delta_time;
+    glm::quat yaw_rotation = glm::angleAxis(yaw_delta, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // Pitch (vertical rotation around local X axis)
+    float pitch_delta = -right_y * controller_rotation_speed_ * delta_time;
+    glm::mat4 rotation_matrix = glm::mat4_cast(camera_rotation_);
+    glm::vec3 local_right = glm::vec3(rotation_matrix[0][0], rotation_matrix[1][0], rotation_matrix[2][0]);
+    glm::quat pitch_rotation = glm::angleAxis(pitch_delta, local_right);
+
+    // Apply rotations: yaw first (global), then pitch (local)
+    camera_rotation_ = pitch_rotation * camera_rotation_ * yaw_rotation;
+  }
+
+  // Left joystick: Panning (camera translation)
+  float left_x = std::abs(controller_left_stick_x_) > deadzone ? controller_left_stick_x_ : 0.0f;
+  float left_y = std::abs(controller_left_stick_y_) > deadzone ? controller_left_stick_y_ : 0.0f;
+
+  if (std::abs(left_x) > deadzone || std::abs(left_y) > deadzone) {
+    glm::mat4 view = GetViewMatrix();
+    glm::vec3 right = glm::vec3(view[0][0], view[1][0], view[2][0]);
+    glm::vec3 up = glm::vec3(view[0][1], view[1][1], view[2][1]);
+
+    float pan_speed = controller_pan_speed_ * camera_distance_ * delta_time;
+    camera_center_[0] += right.x * left_x * pan_speed;
+    camera_center_[1] += right.y * left_x * pan_speed;
+    camera_center_[2] += right.z * left_x * pan_speed;
+    camera_center_[0] += up.x * left_y * pan_speed;
+    camera_center_[1] += up.y * left_y * pan_speed;
+    camera_center_[2] += up.z * left_y * pan_speed;
+  }
+
+  // Back triggers: Forward/backward movement
+  // Left trigger = backward, Right trigger = forward
+  float move_input = controller_trigger_right_ - controller_trigger_left_;
+  if (std::abs(move_input) > 0.1f) {
+    glm::mat4 view = GetViewMatrix();
+    glm::vec3 forward = -glm::vec3(view[0][2], view[1][2], view[2][2]);  // Negative Z is forward
+
+    float move_speed = controller_move_speed_ * camera_distance_ * delta_time;
+    camera_center_[0] += forward.x * move_input * move_speed;
+    camera_center_[1] += forward.y * move_input * move_speed;
+    camera_center_[2] += forward.z * move_input * move_speed;
+  }
 }
 
 void Viewer::UpdateCamera() {
@@ -577,6 +662,22 @@ void Viewer::RenderFrame() {
   draw_options.background = glm::vec3(0.1f, 0.1f, 0.1f);
   draw_options.eps2d = 0.3f;
   draw_options.sh_degree = -1;
+  draw_options.visualize_depth = visualize_depth_;
+  // If auto-range button was clicked, enable it for this frame only
+  bool compute_auto_range = depth_auto_range_;
+  draw_options.depth_auto_range = compute_auto_range;
+  // Depth range in meters (no normalization needed - shader uses meters directly)
+  draw_options.depth_z_min = depth_z_min_;
+  draw_options.depth_z_max = depth_z_max_;
+  draw_options.camera_near = camera_near_;
+  draw_options.camera_far = camera_far_;
+  // Set output pointers for auto-range (one-time computation)
+  if (compute_auto_range) {
+    draw_options.depth_z_min_out = &depth_z_min_;
+    draw_options.depth_z_max_out = &depth_z_max_;
+    // Reset the flag after setting it (one-time computation)
+    depth_auto_range_ = false;
+  }
 
   size_t image_size = static_cast<size_t>(width_) * static_cast<size_t>(height_) * 4;
   if (image_size == 0) {
@@ -685,8 +786,10 @@ void Viewer::RenderFrame() {
   // Render ImGui GUI on top of 3D scene using Vulkan
   if (gui_ && !showing_title_screen_) {
     VkFramebuffer framebuffer = imgui_framebuffers_[image_index];
-    gui_->RenderStatsPanel(command_buffer, framebuffer, width_, height_,
-                           showing_title_screen_, stats_panel_open_, frame_times_ms_, current_frame_time_ms_);
+    gui_->RenderAllPanels(command_buffer, framebuffer, width_, height_,
+                          showing_title_screen_, stats_panel_open_, visual_panel_open_,
+                          frame_times_ms_, current_frame_time_ms_, visualize_depth_,
+                          depth_auto_range_, depth_z_min_, depth_z_max_);
   }
 
   // Transition swapchain image to present
@@ -1190,8 +1293,51 @@ void Viewer::Run(const std::string& ply_path) {
               pending_ply_path_ = path;
             }
           }
+        } else if (key_event.key == SDLK_V && !showing_title_screen_) {
+          // Toggle visual panel with 'V' key
+          visual_panel_open_ = !visual_panel_open_;
+        }
+      } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+        // Controller connected
+        const SDL_GamepadDeviceEvent& device_event = event.gdevice;
+        if (!controller_ && SDL_IsGamepad(device_event.which)) {
+          controller_ = SDL_OpenGamepad(device_event.which);
+          if (controller_) {
+            std::cout << "Game controller connected: " << SDL_GetGamepadName(controller_) << std::endl;
+          }
+        }
+      } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+        // Controller disconnected
+        const SDL_GamepadDeviceEvent& device_event = event.gdevice;
+        if (controller_ && SDL_GetGamepadID(controller_) == device_event.which) {
+          std::cout << "Game controller disconnected" << std::endl;
+          SDL_CloseGamepad(controller_);
+          controller_ = nullptr;
+        }
+      } else if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && controller_) {
+        // Controller axis motion
+        const SDL_GamepadAxisEvent& axis_event = event.gaxis;
+        float value = static_cast<float>(axis_event.value) / 32767.0f;  // Normalize to [-1, 1]
+
+        if (axis_event.axis == SDL_GAMEPAD_AXIS_LEFTX) {
+          controller_left_stick_x_ = value;
+        } else if (axis_event.axis == SDL_GAMEPAD_AXIS_LEFTY) {
+          controller_left_stick_y_ = value;
+        } else if (axis_event.axis == SDL_GAMEPAD_AXIS_RIGHTX) {
+          controller_right_stick_x_ = value;
+        } else if (axis_event.axis == SDL_GAMEPAD_AXIS_RIGHTY) {
+          controller_right_stick_y_ = value;
+        } else if (axis_event.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER) {
+          controller_trigger_left_ = value;
+        } else if (axis_event.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
+          controller_trigger_right_ = value;
         }
       }
+    }
+
+    // Process controller input (if connected and not on title screen)
+    if (controller_ && !showing_title_screen_) {
+      ProcessControllerInput();
     }
 
     // Check if a PLY file was selected

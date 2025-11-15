@@ -71,6 +71,7 @@ def draw(
     backgrounds: np.ndarray | None = None,
     eps2d: float | np.ndarray = 0.3,
     sh_degree: int | np.ndarray = -1,
+    visualize_depth: bool | np.ndarray = False,
 ) -> RenderedImage:
     """
     viewmats: (..., 4, 4)
@@ -80,6 +81,7 @@ def draw(
     backgrounds: (..., 3)
     eps2d: (...) or scalar
     sh_degree: (...) or scalar. -1 for max degree.
+    visualize_depth: (...) or scalar. If True, visualize depth using a colormap instead of colors.
     """
     if isinstance(near, (int, float)):
         near = np.array(near)
@@ -92,6 +94,9 @@ def draw(
 
     if isinstance(sh_degree, int):
         sh_degree = np.array(sh_degree)
+
+    if isinstance(visualize_depth, bool):
+        visualize_depth = np.array(visualize_depth)
 
     if backgrounds is None:
         backgrounds = np.array([0, 0, 0])
@@ -118,12 +123,14 @@ def draw(
         backgrounds.shape[:-1],
         eps2d.shape,
         sh_degree.shape,
+        visualize_depth.shape,
     )
     viewmats = np.broadcast_to(viewmats, (*batch_dims, 4, 4))
     Ks = np.broadcast_to(Ks, (*batch_dims, 3, 3))
     backgrounds = np.broadcast_to(backgrounds, (*batch_dims, 3))
     eps2d = np.broadcast_to(eps2d, batch_dims)
     sh_degree = np.broadcast_to(sh_degree, batch_dims)
+    visualize_depth = np.broadcast_to(visualize_depth, batch_dims)
 
     # allocate image
     images = np.zeros((*batch_dims, height, width, 4), dtype=np.uint8)
@@ -142,6 +149,7 @@ def draw(
     backgrounds = np.ascontiguousarray(backgrounds.reshape(-1, 3))
     eps2d = np.ascontiguousarray(eps2d.reshape(-1))
     sh_degree = np.ascontiguousarray(sh_degree.reshape(-1))
+    visualize_depth = np.ascontiguousarray(visualize_depth.reshape(-1))
     images = np.ascontiguousarray(images.reshape(-1, height, width, 4))
 
     rendered_images = []
@@ -157,6 +165,7 @@ def draw(
                 eps2d[i],
                 sh_degree[i],
                 images[i],
+                bool(visualize_depth[i]),
             )
         )
 

@@ -7,7 +7,8 @@ namespace gpu {
 
 GraphicsPipeline::GraphicsPipeline(VkDevice device, VkPipelineLayout pipeline_layout, const uint32_t* vertex_shader,
                                    size_t vertex_shader_size, const uint32_t* fragment_shader,
-                                   size_t fragment_shader_size, VkFormat format)
+                                   size_t fragment_shader_size, VkFormat format, VkFormat depth_format,
+                                   bool depth_write_enable, VkCompareOp depth_compare_op)
     : device_(device) {
   // TODO: pipeline cache.
   VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
@@ -37,6 +38,9 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkPipelineLayout pipeline_la
   VkPipelineRenderingCreateInfo rendering_info = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
   rendering_info.colorAttachmentCount = 1;
   rendering_info.pColorAttachmentFormats = &format;
+  if (depth_format != VK_FORMAT_UNDEFINED) {
+    rendering_info.depthAttachmentFormat = depth_format;
+  }
 
   VkPipelineVertexInputStateCreateInfo vertex_input_state = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 
@@ -57,6 +61,15 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkPipelineLayout pipeline_la
 
   VkPipelineMultisampleStateCreateInfo multisample_state = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   multisample_state.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+  VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  if (depth_format != VK_FORMAT_UNDEFINED) {
+    depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = depth_write_enable ? VK_TRUE : VK_FALSE;  // Enable depth writing only when needed (e.g., for auto-range)
+    depth_stencil_state.depthCompareOp = depth_compare_op;  // Use configurable compare op (LESS_OR_EQUAL helps with transparency when depth writing is enabled)
+    depth_stencil_state.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_state.stencilTestEnable = VK_FALSE;
+  }
 
   VkPipelineColorBlendAttachmentState color_attachment = {};
   color_attachment.blendEnable = VK_TRUE;
@@ -92,6 +105,9 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkPipelineLayout pipeline_la
   pipeline_info.pViewportState = &viewport_state;
   pipeline_info.pRasterizationState = &rasterization_state;
   pipeline_info.pMultisampleState = &multisample_state;
+  if (depth_format != VK_FORMAT_UNDEFINED) {
+    pipeline_info.pDepthStencilState = &depth_stencil_state;
+  }
   pipeline_info.pColorBlendState = &color_blending_state;
   pipeline_info.pDynamicState = &dynamic_state;
   pipeline_info.layout = pipeline_layout;
